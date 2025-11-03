@@ -37,7 +37,13 @@ def solve_sudoku(grid):
     """
     # Convert to numpy array if needed
     if not isinstance(grid, np.ndarray):
-        grid = np.array(grid, dtype=int)
+        grid = np.array(grid, dtype=int).copy()
+    else:
+        grid = grid.copy()
+    
+    # First check if puzzle is valid
+    if not is_valid_puzzle(grid):
+        return None
     
     # Find empty cell
     for row in range(9):
@@ -75,4 +81,55 @@ def is_valid_puzzle(grid):
                 grid[row][col] = num
     
     return True
+
+def count_filled_cells(grid):
+    """Count how many cells are filled (non-zero)."""
+    if not isinstance(grid, np.ndarray):
+        grid = np.array(grid, dtype=int)
+    return np.count_nonzero(grid)
+
+def get_validation_info(grid):
+    """Get information about why a puzzle might be invalid."""
+    if not isinstance(grid, np.ndarray):
+        grid = np.array(grid, dtype=int)
+    
+    filled = count_filled_cells(grid)
+    total = 81
+    
+    # Check for duplicate numbers in rows
+    row_errors = []
+    for i in range(9):
+        row = grid[i]
+        non_zero = row[row != 0]
+        if len(non_zero) != len(np.unique(non_zero)):
+            row_errors.append(i + 1)
+    
+    # Check for duplicate numbers in columns
+    col_errors = []
+    for j in range(9):
+        col = grid[:, j]
+        non_zero = col[col != 0]
+        if len(non_zero) != len(np.unique(non_zero)):
+            col_errors.append(j + 1)
+    
+    # Check for duplicate numbers in boxes
+    box_errors = []
+    for box_row in range(3):
+        for box_col in range(3):
+            start_r = box_row * 3
+            start_c = box_col * 3
+            box = grid[start_r:start_r+3, start_c:start_c+3]
+            non_zero = box[box != 0]
+            if len(non_zero) != len(np.unique(non_zero)):
+                box_errors.append((box_row + 1, box_col + 1))
+    
+    return {
+        'filled': filled,
+        'total': total,
+        'percentage': (filled / total) * 100,
+        'row_errors': row_errors,
+        'col_errors': col_errors,
+        'box_errors': box_errors,
+        'is_valid': len(row_errors) == 0 and len(col_errors) == 0 and len(box_errors) == 0
+    }
 
