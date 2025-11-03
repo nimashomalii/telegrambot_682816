@@ -99,8 +99,8 @@ def perspective_transform(image, pts):
     
     return warped
 
-def extract_digit(cell):
-    """Extract digit from a cell using improved OCR with better preprocessing."""
+def extract_digit(cell, use_ocr=True):
+    """Extract digit from a cell using optimized OCR."""
     # Remove borders more carefully
     h, w = cell.shape
     if h < 10 or w < 10:
@@ -112,7 +112,7 @@ def extract_digit(cell):
     if cell.size == 0:
         return 0
     
-    # Count non-zero pixels
+    # Count non-zero pixels (quick check for empty cells)
     non_zero = cv2.countNonZero(cell)
     total_pixels = cell.size
     
@@ -120,92 +120,66 @@ def extract_digit(cell):
     if non_zero < total_pixels * 0.02:
         return 0
     
-    # Try OCR with pytesseract (improved preprocessing)
-    try:
-        import pytesseract
-        
-        # Method 1: Direct OCR with improved preprocessing
-        # Enhance contrast and brightness
-        cell_enhanced = cv2.convertScaleAbs(cell, alpha=2.0, beta=30)
-        
-        # Apply morphological operations to clean up
-        kernel = np.ones((2, 2), np.uint8)
-        cell_enhanced = cv2.morphologyEx(cell_enhanced, cv2.MORPH_CLOSE, kernel)
-        cell_enhanced = cv2.morphologyEx(cell_enhanced, cv2.MORPH_OPEN, kernel)
-        
-        # Resize significantly larger for better OCR (minimum 200x200)
-        min_size = 200
-        scale = max(min_size / cell_enhanced.shape[0], min_size / cell_enhanced.shape[1])
-        new_w = int(cell_enhanced.shape[1] * scale)
-        new_h = int(cell_enhanced.shape[0] * scale)
-        
-        cell_resized = cv2.resize(cell_enhanced, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-        
-        # Convert to PIL Image
-        cell_pil = Image.fromarray(cell_resized)
-        
-        # Try multiple PSM modes for better recognition
-        psm_modes = [
-            '--psm 10',  # Single character
-            '--psm 8',   # Single word
-            '--psm 7',   # Single text line
-        ]
-        
-        for psm in psm_modes:
-            config = f'{psm} -c tessedit_char_whitelist=123456789'
+    # Try OCR with pytesseract (optimized - only try if needed)
+    if use_ocr:
+        try:
+            import pytesseract
+            
+            # Quick preprocessing: enhance contrast and resize
+            cell_enhanced = cv2.convertScaleAbs(cell, alpha=2.0, beta=30)
+            
+            # Apply light morphological operations
+            kernel = np.ones((2, 2), np.uint8)
+            cell_enhanced = cv2.morphologyEx(cell_enhanced, cv2.MORPH_CLOSE, kernel)
+            
+            # Resize larger for better OCR (but not too large - balance speed/accuracy)
+            min_size = 150  # Reduced from 200 for speed
+            scale = max(min_size / cell_enhanced.shape[0], min_size / cell_enhanced.shape[1])
+            new_w = int(cell_enhanced.shape[1] * scale)
+            new_h = int(cell_enhanced.shape[0] * scale)
+            
+            cell_resized = cv2.resize(cell_enhanced, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            cell_pil = Image.fromarray(cell_resized)
+            
+            # Try only the best PSM mode first (single character)
+            # Only try others if this fails
+            config = '--psm 10 -c tessedit_char_whitelist=123456789'
             text = pytesseract.image_to_string(cell_pil, config=config)
             text = text.strip()
             
             if text:
-                # Try to extract digit
                 digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
                 if digits:
-                    digit = int(digits[0])
-                    if 1 <= digit <= 9:
-                        return digit
-        
-        # Method 2: Try with inverted image (sometimes works better)
-        cell_inv = cv2.bitwise_not(cell_enhanced)
-        cell_inv_resized = cv2.resize(cell_inv, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-        cell_inv_pil = Image.fromarray(cell_inv_resized)
-        
-        for psm in psm_modes:
-            config = f'{psm} -c tessedit_char_whitelist=123456789'
+                    return int(digits[0])
+            
+            # If PSM 10 failed, try PSM 8 (single word) - only once
+            config = '--psm 8 -c tessedit_char_whitelist=123456789'
+            text = pytesseract.image_to_string(cell_pil, config=config)
+            text = text.strip()
+            
+            if text:
+                digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
+                if digits:
+                    return int(digits[0])
+            
+            # Last resort: try inverted image (only once)
+            cell_inv = cv2.bitwise_not(cell_enhanced)
+            cell_inv_resized = cv2.resize(cell_inv, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            cell_inv_pil = Image.fromarray(cell_inv_resized)
+            
+            config = '--psm 10 -c tessedit_char_whitelist=123456789'
             text = pytesseract.image_to_string(cell_inv_pil, config=config)
             text = text.strip()
             
             if text:
                 digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
                 if digits:
-                    digit = int(digits[0])
-                    if 1 <= digit <= 9:
-                        return digit
-        
-        # Method 3: Try with adaptive threshold
-        cell_adaptive = cv2.adaptiveThreshold(
-            cell, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY_INV, 11, 2
-        )
-        cell_adaptive_resized = cv2.resize(cell_adaptive, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-        cell_adaptive_pil = Image.fromarray(cell_adaptive_resized)
-        
-        for psm in psm_modes:
-            config = f'{psm} -c tessedit_char_whitelist=123456789'
-            text = pytesseract.image_to_string(cell_adaptive_pil, config=config)
-            text = text.strip()
-            
-            if text:
-                digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
-                if digits:
-                    digit = int(digits[0])
-                    if 1 <= digit <= 9:
-                        return digit
+                    return int(digits[0])
                         
-    except Exception as e:
-        # If OCR fails, try contour-based detection as fallback
-        pass
+        except Exception:
+            pass
     
-    # Fallback: Contour-based detection (if OCR completely fails)
+    # Fallback: Contour-based detection (fast, no OCR)
     try:
         contours, _ = cv2.findContours(cell, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
@@ -213,11 +187,9 @@ def extract_digit(cell):
             area = cv2.contourArea(largest)
             cell_area = cell.shape[0] * cell.shape[1]
             
-            # If contour is significant, there's likely a digit (but we can't read it)
+            # If contour is significant, there's likely a digit
             if area > cell_area * 0.15:
-                # Return -1 to indicate digit exists but couldn't be read
-                # This helps debug which cells have numbers
-                return -1
+                return -1  # Digit detected but couldn't read
     except:
         pass
     
@@ -270,7 +242,8 @@ def extract_sudoku_from_image(image_path):
     
     grid = np.zeros((9, 9), dtype=int)
     
-    # Extract digits from each cell - try multiple threshold methods
+    # Extract digits from each cell - optimized: use only best threshold method
+    # Use adaptive threshold (usually best) as primary method
     for i in range(9):
         for j in range(9):
             y1 = max(0, i * cell_h)
@@ -278,23 +251,23 @@ def extract_sudoku_from_image(image_path):
             x1 = max(0, j * cell_w)
             x2 = min(w, (j + 1) * cell_w)
             
-            # Try with adaptive threshold first
+            # Try with adaptive threshold first (best method)
             cell1 = thresh1[y1:y2, x1:x2]
-            digit = extract_digit(cell1)
+            digit = extract_digit(cell1, use_ocr=True)
             
-            # If failed, try with Otsu threshold
+            # Only try other methods if adaptive threshold failed and we detected something
             if digit == 0 or digit == -1:
+                # Try Otsu threshold (fast, good fallback)
                 cell2 = thresh2[y1:y2, x1:x2]
-                digit2 = extract_digit(cell2)
+                digit2 = extract_digit(cell2, use_ocr=(digit == -1))  # Only OCR if we detected something
                 if digit2 > 0:
                     digit = digit2
-            
-            # If still failed, try with simple threshold
-            if digit == 0 or digit == -1:
-                cell3 = thresh3[y1:y2, x1:x2]
-                digit3 = extract_digit(cell3)
-                if digit3 > 0:
-                    digit = digit3
+                elif digit == -1 and digit2 == 0:
+                    # If we detected something but both methods failed, try simple threshold
+                    cell3 = thresh3[y1:y2, x1:x2]
+                    digit3 = extract_digit(cell3, use_ocr=True)
+                    if digit3 > 0:
+                        digit = digit3
             
             # If digit is -1 (detected but couldn't read), set to 0
             if digit == -1:
