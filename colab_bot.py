@@ -5,15 +5,31 @@ This version includes workarounds for Google Colab environment:
 - Uses Colab-compatible file paths
 - Handles Colab's file system differently
 - Includes keep-alive mechanism
+- Works with Jupyter/Colab event loops
 """
 
 import os
+import sys
 import logging
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from sudoku_solver import solve_sudoku
 from image_processor import extract_sudoku_from_image, create_solved_image
 import time
+
+# Fix for Jupyter/Colab event loop issues
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+    print("✅ nest_asyncio applied - Colab/Jupyter compatible")
+except ImportError:
+    print("⚠️  nest_asyncio not installed. Installing...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "nest_asyncio"])
+    import nest_asyncio
+    nest_asyncio.apply()
+    print("✅ nest_asyncio installed and applied")
 
 # Enable logging
 logging.basicConfig(
@@ -26,8 +42,14 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 
 # Colab-specific: Create temp directory if it doesn't exist
-TEMP_DIR = '/content/temp_sudoku'
+# Detect if running in Colab
+if 'google.colab' in sys.modules:
+    TEMP_DIR = '/content/temp_sudoku'
+else:
+    # For local Jupyter or other environments
+    TEMP_DIR = os.path.join(os.getcwd(), 'temp_sudoku')
 os.makedirs(TEMP_DIR, exist_ok=True)
+print(f"📁 Temporary directory: {TEMP_DIR}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -150,16 +172,22 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    # Add keep-alive job (runs every 5 minutes)
-    job_queue = application.job_queue
-    if job_queue:
-        job_queue.run_repeating(keep_alive, interval=300, first=60)
+    # Add keep-alive job (runs every 5 minutes) - only if job_queue is available
+    try:
+        job_queue = application.job_queue
+        if job_queue:
+            job_queue.run_repeating(keep_alive, interval=300, first=60)
+            print("✅ Keep-alive job scheduled")
+    except Exception as e:
+        print(f"⚠️  JobQueue not available (this is OK): {e}")
     
     # Start the bot
     print("Bot is starting...")
     print("Note: This will run until you interrupt the cell (Ctrl+C) or Colab times out")
     print("Colab sessions typically timeout after 90 minutes of inactivity")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Use run_polling which now works with nest_asyncio
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
