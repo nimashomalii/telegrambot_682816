@@ -66,13 +66,60 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             os.remove(photo_path)
             return
         
+        # Validate the puzzle before solving
+        from sudoku_solver import is_valid_puzzle, count_filled_cells, get_validation_info
+        
+        await processing_msg.edit_text('🔍 Validating puzzle...')
+        
+        validation_info = get_validation_info(grid)
+        filled_count = validation_info['filled']
+        filled_percentage = validation_info['percentage']
+        
+        # Check if puzzle is valid
+        if not validation_info['is_valid']:
+            error_msg = '❌ پازل نامعتبر است!\n\n'
+            error_msg += f'📊 تعداد خانه‌های پر شده: {filled_count} از 81 ({filled_percentage:.1f}%)\n\n'
+            
+            if validation_info['row_errors']:
+                error_msg += f'⚠️ خطا در ردیف‌های: {validation_info["row_errors"]}\n'
+            if validation_info['col_errors']:
+                error_msg += f'⚠️ خطا در ستون‌های: {validation_info["col_errors"]}\n'
+            if validation_info['box_errors']:
+                error_msg += f'⚠️ خطا در جعبه‌های: {validation_info["box_errors"]}\n'
+            
+            error_msg += '\n💡 مشکل احتمالی:\n'
+            error_msg += '• تصویر واضح نبوده و OCR اعداد را اشتباه تشخیص داده\n'
+            error_msg += '• یا بعضی اعداد تشخیص داده نشده‌اند\n'
+            error_msg += '• لطفاً تصویر واضح‌تری بفرستید'
+            
+            await processing_msg.edit_text(error_msg)
+            os.remove(photo_path)
+            return
+        
+        # Check if too many cells are empty (OCR might have failed)
+        if filled_count < 17:  # Sudoku typically needs at least 17 clues
+            await processing_msg.edit_text(
+                '⚠️ تعداد خانه‌های خالی خیلی زیاد است!\n\n'
+                f'📊 تعداد خانه‌های پر شده: {filled_count} از 81\n\n'
+                '💡 ممکن است OCR اعداد را به درستی تشخیص نداده باشد.\n'
+                '• لطفاً تصویر واضح‌تر و با نور بهتر بفرستید\n'
+                '• مطمئن شوید که اعداد در تصویر واضح هستند'
+            )
+            os.remove(photo_path)
+            return
+        
         # Solve the Sudoku
         await processing_msg.edit_text('🧮 Solving the puzzle...')
         solved_grid = solve_sudoku(grid)
         
         if solved_grid is None:
             await processing_msg.edit_text(
-                '❌ Sorry, I couldn\'t solve this puzzle. It might be invalid or unsolvable.'
+                '❌ متأسفم، نتوانستم پازل را حل کنم.\n\n'
+                f'📊 تعداد خانه‌های پر شده: {filled_count} از 81\n\n'
+                '💡 ممکن است:\n'
+                '• پازل نامعتبر یا غیرقابل حل باشد\n'
+                '• یا OCR اعداد را اشتباه تشخیص داده باشد\n\n'
+                '• لطفاً تصویر واضح‌تری بفرستید'
             )
             os.remove(photo_path)
             return
