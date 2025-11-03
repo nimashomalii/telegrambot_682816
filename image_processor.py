@@ -100,10 +100,14 @@ def perspective_transform(image, pts):
     return warped
 
 def extract_digit(cell):
-    """Extract digit from a cell using simple threshold and OCR-like approach."""
-    # Remove borders
+    """Extract digit from a cell using improved OCR with better preprocessing."""
+    # Remove borders more carefully
     h, w = cell.shape
-    cell = cell[int(h*0.1):int(h*0.9), int(w*0.1):int(w*0.9)]
+    if h < 10 or w < 10:
+        return 0
+    
+    # Remove borders (keep more of the cell)
+    cell = cell[int(h*0.05):int(h*0.95), int(w*0.05):int(w*0.95)]
     
     if cell.size == 0:
         return 0
@@ -112,54 +116,117 @@ def extract_digit(cell):
     non_zero = cv2.countNonZero(cell)
     total_pixels = cell.size
     
-    # If too few pixels, cell is empty
-    if non_zero < total_pixels * 0.05:
+    # If too few pixels, cell is empty (lower threshold)
+    if non_zero < total_pixels * 0.02:
         return 0
     
-    # Simple digit recognition based on pixel patterns
-    # This is a simplified approach - for better accuracy, use OCR library
-    
-    # For now, use a basic approach: detect if there are enough pixels to be a digit
-    # This is a placeholder - in production, use pytesseract or a trained model
-    
-    # Try to extract using contour detection
-    contours, _ = cv2.findContours(cell, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return 0
-    
-    # Find largest contour
-    largest = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(largest)
-    cell_area = cell.shape[0] * cell.shape[1]
-    
-    # If the contour is too small, likely empty
-    if area < cell_area * 0.1:
-        return 0
-    
-    # For now, return a placeholder - user will need to implement OCR
-    # or use a digit recognition model
-    # This is where you'd integrate pytesseract or a CNN model
-    
-    # Simple heuristic: try to read with pytesseract if available
+    # Try OCR with pytesseract (improved preprocessing)
     try:
         import pytesseract
-        # Convert to PIL Image for tesseract
-        cell_pil = Image.fromarray(cell)
-        # Resize for better recognition
-        cell_pil = cell_pil.resize((cell_pil.width * 4, cell_pil.height * 4), Image.LANCZOS)
-        text = pytesseract.image_to_string(cell_pil, config='--psm 10 -c tessedit_char_whitelist=123456789')
-        text = text.strip()
-        if text and text.isdigit() and 1 <= int(text) <= 9:
-            return int(text)
+        
+        # Method 1: Direct OCR with improved preprocessing
+        # Enhance contrast and brightness
+        cell_enhanced = cv2.convertScaleAbs(cell, alpha=2.0, beta=30)
+        
+        # Apply morphological operations to clean up
+        kernel = np.ones((2, 2), np.uint8)
+        cell_enhanced = cv2.morphologyEx(cell_enhanced, cv2.MORPH_CLOSE, kernel)
+        cell_enhanced = cv2.morphologyEx(cell_enhanced, cv2.MORPH_OPEN, kernel)
+        
+        # Resize significantly larger for better OCR (minimum 200x200)
+        min_size = 200
+        scale = max(min_size / cell_enhanced.shape[0], min_size / cell_enhanced.shape[1])
+        new_w = int(cell_enhanced.shape[1] * scale)
+        new_h = int(cell_enhanced.shape[0] * scale)
+        
+        cell_resized = cv2.resize(cell_enhanced, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        
+        # Convert to PIL Image
+        cell_pil = Image.fromarray(cell_resized)
+        
+        # Try multiple PSM modes for better recognition
+        psm_modes = [
+            '--psm 10',  # Single character
+            '--psm 8',   # Single word
+            '--psm 7',   # Single text line
+        ]
+        
+        for psm in psm_modes:
+            config = f'{psm} -c tessedit_char_whitelist=123456789'
+            text = pytesseract.image_to_string(cell_pil, config=config)
+            text = text.strip()
+            
+            if text:
+                # Try to extract digit
+                digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
+                if digits:
+                    digit = int(digits[0])
+                    if 1 <= digit <= 9:
+                        return digit
+        
+        # Method 2: Try with inverted image (sometimes works better)
+        cell_inv = cv2.bitwise_not(cell_enhanced)
+        cell_inv_resized = cv2.resize(cell_inv, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        cell_inv_pil = Image.fromarray(cell_inv_resized)
+        
+        for psm in psm_modes:
+            config = f'{psm} -c tessedit_char_whitelist=123456789'
+            text = pytesseract.image_to_string(cell_inv_pil, config=config)
+            text = text.strip()
+            
+            if text:
+                digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
+                if digits:
+                    digit = int(digits[0])
+                    if 1 <= digit <= 9:
+                        return digit
+        
+        # Method 3: Try with adaptive threshold
+        cell_adaptive = cv2.adaptiveThreshold(
+            cell, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 11, 2
+        )
+        cell_adaptive_resized = cv2.resize(cell_adaptive, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        cell_adaptive_pil = Image.fromarray(cell_adaptive_resized)
+        
+        for psm in psm_modes:
+            config = f'{psm} -c tessedit_char_whitelist=123456789'
+            text = pytesseract.image_to_string(cell_adaptive_pil, config=config)
+            text = text.strip()
+            
+            if text:
+                digits = [c for c in text if c.isdigit() and '1' <= c <= '9']
+                if digits:
+                    digit = int(digits[0])
+                    if 1 <= digit <= 9:
+                        return digit
+                        
+    except Exception as e:
+        # If OCR fails, try contour-based detection as fallback
+        pass
+    
+    # Fallback: Contour-based detection (if OCR completely fails)
+    try:
+        contours, _ = cv2.findContours(cell, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            cell_area = cell.shape[0] * cell.shape[1]
+            
+            # If contour is significant, there's likely a digit (but we can't read it)
+            if area > cell_area * 0.15:
+                # Return -1 to indicate digit exists but couldn't be read
+                # This helps debug which cells have numbers
+                return -1
     except:
         pass
     
-    # If OCR fails, return 0 (will need manual input or better OCR)
+    # If all methods fail, return 0 (empty cell)
     return 0
 
 def extract_sudoku_from_image(image_path):
     """
-    Extract Sudoku grid from image.
+    Extract Sudoku grid from image with improved preprocessing.
     
     Returns:
         9x9 numpy array with 0 for empty cells, or None if extraction fails
@@ -175,29 +242,64 @@ def extract_sudoku_from_image(image_path):
     # Convert to grayscale
     gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     
-    # Apply adaptive threshold
-    thresh = cv2.adaptiveThreshold(
+    # Enhance image quality
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    
+    # Apply Gaussian blur to reduce noise
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    
+    # Try multiple threshold methods and use the best one
+    # Method 1: Adaptive threshold
+    thresh1 = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV, 11, 2
     )
     
+    # Method 2: Otsu's threshold
+    _, thresh2 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Method 3: Simple threshold (try different values)
+    _, thresh3 = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    
     # Divide into 9x9 grid
-    h, w = thresh.shape
+    h, w = gray.shape
     cell_h = h // 9
     cell_w = w // 9
     
     grid = np.zeros((9, 9), dtype=int)
     
-    # Extract digits from each cell
+    # Extract digits from each cell - try multiple threshold methods
     for i in range(9):
         for j in range(9):
-            y1 = i * cell_h
-            y2 = (i + 1) * cell_h
-            x1 = j * cell_w
-            x2 = (j + 1) * cell_w
+            y1 = max(0, i * cell_h)
+            y2 = min(h, (i + 1) * cell_h)
+            x1 = max(0, j * cell_w)
+            x2 = min(w, (j + 1) * cell_w)
             
-            cell = thresh[y1:y2, x1:x2]
-            digit = extract_digit(cell)
+            # Try with adaptive threshold first
+            cell1 = thresh1[y1:y2, x1:x2]
+            digit = extract_digit(cell1)
+            
+            # If failed, try with Otsu threshold
+            if digit == 0 or digit == -1:
+                cell2 = thresh2[y1:y2, x1:x2]
+                digit2 = extract_digit(cell2)
+                if digit2 > 0:
+                    digit = digit2
+            
+            # If still failed, try with simple threshold
+            if digit == 0 or digit == -1:
+                cell3 = thresh3[y1:y2, x1:x2]
+                digit3 = extract_digit(cell3)
+                if digit3 > 0:
+                    digit = digit3
+            
+            # If digit is -1 (detected but couldn't read), set to 0
+            if digit == -1:
+                digit = 0
+            
             grid[i][j] = digit
     
     return grid
